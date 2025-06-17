@@ -1,5 +1,5 @@
 const express = require('express');
-const pool = require('./db');
+const { poolDefault, poolDropage } = require('./db');
 require('dotenv').config();
 
 const app = express();
@@ -217,6 +217,48 @@ app.get('/7ca54631c26827f57b08354475acd64f/transactions/', async (req, res) => {
   }
 });
 
+app.get('/dropage/7ca54631c26827f57b08354475acd64f/transactions/', async (req, res) => {
+  try {
+    const [rows] = await poolDropage.query(`
+      SELECT 
+        i.id AS invoice_id,
+        i.datepaid AS date,
+        i.total AS bruto,
+        i.paymentmethod AS gateway,
+        u.id AS client_id,
+        u.firstname AS client_name,
+        u.email AS client_email,
+        u.datecreated AS client_data_registration,
+        (
+          SELECT ii.description
+          FROM tblinvoiceitems ii
+          WHERE ii.invoiceid = i.id
+            AND (ii.description LIKE '%cupom%' OR ii.description LIKE '%desconto%' OR ii.type = 'Promoção')
+          ORDER BY ii.id DESC
+          LIMIT 1
+        ) AS cupom_code,
+        ac.amountin AS real_amount,
+        ac.fees AS taxas,
+        (ac.amountin - ac.fees) AS liquido
+      FROM tblinvoices i
+      JOIN tblclients u ON u.id = i.userid
+      JOIN tblinvoiceitems ii ON ii.invoiceid = i.id
+      LEFT JOIN (
+        SELECT invoiceid, SUM(amountin) AS amountin, SUM(fees) AS fees
+        FROM tblaccounts
+        GROUP BY invoiceid
+      ) ac ON ac.invoiceid = i.id
+      WHERE i.status = 'Paid'
+      GROUP BY i.id
+      ORDER BY i.datepaid DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao buscar relatório completo de transações (Dropage)', details: err.message });
+  }
+});
 
 app.listen(port, () => {
   console.log(`API rodando em http://localhost:${port}`);
