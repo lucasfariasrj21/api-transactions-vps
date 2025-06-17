@@ -102,10 +102,11 @@ app.get('/7ca54631c26827f57b08354475acd64f/client-cupom', async (req, res) => {
   }
 });
 
-// Rota única com todos os dados detalhados filtrados por período, incluindo painel e créditos via tblinvoiceitems/mod_recarga_produto
 app.get('/7ca54631c26827f57b08354475acd64f/transactions/full-report', async (req, res) => {
   const { start, end } = req.query;
-  if (!start || !end) return res.status(400).json({ error: 'Parâmetros "start" e "end" são obrigatórios (formato YYYY-MM-DD).' });
+  if (!start || !end) {
+    return res.status(400).json({ error: 'Parâmetros "start" e "end" são obrigatórios (formato YYYY-MM-DD).' });
+  }
 
   try {
     const [rows] = await pool.query(`
@@ -120,6 +121,70 @@ app.get('/7ca54631c26827f57b08354475acd64f/transactions/full-report', async (req
         u.datecreated AS client_data_registration,
         rp.painel,
         rp.creditos,
+        (
+          SELECT GROUP_CONCAT(ii.token)
+          FROM tblinvoiceitems ii
+          WHERE ii.invoiceid = i.id
+            AND ii.token IS NOT NULL
+        ) AS tokens,
+        (
+          SELECT 
+            CONCAT('Descrição: ', ii.description)
+          FROM tblinvoiceitems ii
+          WHERE ii.invoiceid = i.id
+            AND (
+              ii.description LIKE '%cupom%' 
+              OR ii.description LIKE '%desconto%' 
+              OR ii.type = 'Promoção'
+            )
+          ORDER BY ii.id DESC
+          LIMIT 1
+        ) AS cupom_code,
+        ac.amountin AS real_amount,
+        ac.fees AS taxas,
+        (ac.amountin - ac.fees) AS liquido
+      FROM tblinvoices i
+      JOIN tblclients u ON u.id = i.userid
+      LEFT JOIN tblinvoiceitems it ON it.invoiceid = i.id
+      LEFT JOIN mod_recarga_produto rp ON rp.product_id = it.product
+      LEFT JOIN (
+        SELECT invoiceid, SUM(amountin) AS amountin, SUM(fees) AS fees
+        FROM tblaccounts
+        GROUP BY invoiceid
+      ) ac ON ac.invoiceid = i.id
+      WHERE DATE(i.datepaid) BETWEEN ? AND ?
+        AND i.status = 'Paid'
+      GROUP BY i.id
+      ORDER BY i.datepaid DESC
+    `, [start, end]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao buscar relatório completo de transações', details: err.message });
+  }
+});
+
+app.get('/7ca54631c26827f57b08354475acd64f/transactions/', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        i.id AS invoice_id,
+        i.datepaid AS date,
+        i.total AS bruto,
+        i.paymentmethod AS gateway,
+        u.id AS client_id,
+        u.firstname AS client_name,
+        u.email AS client_email,
+        u.datecreated AS client_data_registration,
+        rp.painel,
+        rp.creditos,
+        (
+          SELECT GROUP_CONCAT(ii.token)
+          FROM tblinvoiceitems ii
+          WHERE ii.invoiceid = i.id
+            AND ii.token IS NOT NULL
+        ) AS tokens,
         (
           SELECT ii.description
           FROM tblinvoiceitems ii
@@ -140,16 +205,18 @@ app.get('/7ca54631c26827f57b08354475acd64f/transactions/full-report', async (req
         FROM tblaccounts
         GROUP BY invoiceid
       ) ac ON ac.invoiceid = i.id
-      WHERE DATE(i.datepaid) BETWEEN ? AND ?
-        AND i.status = 'Paid'
+      WHERE i.status = 'Paid'
+      GROUP BY i.id
       ORDER BY i.datepaid DESC
-    `, [start, end]);
+    `);
 
     res.json(rows);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Erro ao buscar relatório completo de transações', details: err.message });
   }
 });
+
 
 app.listen(port, () => {
   console.log(`API rodando em http://localhost:${port}`);
